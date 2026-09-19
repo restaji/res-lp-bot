@@ -419,9 +419,13 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Low yield (only after position has had time to accumulate fees) ───
+  // Skipped while the position is still net-profitable — low fee/TVL alone
+  // shouldn't chop a position that's winning on price appreciation.
   const { age_minutes } = positionData;
   const minAgeForYieldCheck = mgmtConfig.minAgeBeforeYieldCheck ?? 60;
+  const isProfitable = !pnl_pct_suspicious && currentPnlPct != null && currentPnlPct > 0;
   if (
+    !isProfitable &&
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h &&

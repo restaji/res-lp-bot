@@ -933,6 +933,7 @@ function getDeterministicCloseRule(position, managementConfig) {
     return { action: "CLOSE", rule: 4, reason: "OOR" };
   }
   if (
+    !(!pnlSuspect && position.pnl_pct != null && position.pnl_pct > 0) &&
     position.fee_per_tvl_24h != null &&
     position.fee_per_tvl_24h < managementConfig.minFeePerTvl24h &&
     (position.age_minutes ?? 0) >= 60
