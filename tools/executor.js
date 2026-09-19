@@ -20,7 +20,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
@@ -848,7 +848,7 @@ async function runSafetyChecks(name, args) {
       }
 
       // Check amount limits
-      const amountY = deployAmountY;
+      let amountY = deployAmountY;
       if (!Number.isFinite(amountY) || amountY <= 0) {
         return {
           pass: false,
@@ -864,10 +864,15 @@ async function runSafetyChecks(name, args) {
         };
       }
       if (amountY > config.risk.maxDeployAmount) {
-        return {
-          pass: false,
-          reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
-        };
+        // Clamp instead of blocking: a block burns the one-shot deploy lock and the cycle deploys nothing.
+        let clamped = config.risk.maxDeployAmount;
+        try {
+          clamped = Math.min(clamped, computeDeployAmount((await getWalletBalances()).sol));
+        } catch { /* keep the max cap */ }
+        log("safety_clamp", `deploy amount ${amountY} SOL exceeds max ${config.risk.maxDeployAmount} — clamped to ${clamped} SOL`);
+        amountY = clamped;
+        args.amount_y = clamped;
+        delete args.amount_sol;
       }
 
       // Check SOL balance
