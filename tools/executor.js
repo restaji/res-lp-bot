@@ -216,8 +216,11 @@ function normalizeConfigValue(key, value) {
     "solMode",
     "darwinEnabled",
     "lpAgentRelayEnabled",
+    "chartIndicatorsEnabled",
+    "requireAllIntervals",
+    "indicatorExitEnabled",
   ]);
-  const arrayKeys = new Set(["allowedLaunchpads", "blockedLaunchpads"]);
+  const arrayKeys = new Set(["allowedLaunchpads", "blockedLaunchpads", "indicatorIntervals"]);
   const stringKeys = new Set([
     "timeframe",
     "category",
@@ -236,6 +239,8 @@ function normalizeConfigValue(key, value) {
     "pnlRpcUrl",
     "gmgnFeeSource",
     "gmgnApiKey",
+    "indicatorEntryPreset",
+    "indicatorExitPreset",
   ]);
   if (value === null) return null;
   if (booleanKeys.has(key)) return coerceBoolean(value, key);
@@ -452,6 +457,8 @@ const toolMap = {
       chartIndicatorsEnabled: ["indicators", "enabled", ["chartIndicators", "enabled"]],
       indicatorEntryPreset: ["indicators", "entryPreset", ["chartIndicators", "entryPreset"]],
       indicatorExitPreset: ["indicators", "exitPreset", ["chartIndicators", "exitPreset"]],
+      indicatorExitEnabled: ["indicators", "exitEnabled", ["chartIndicators", "exitEnabled"]],
+      downsidePct: ["strategy", "downsidePct"],
       rsiLength: ["indicators", "rsiLength", ["chartIndicators", "rsiLength"]],
       indicatorIntervals: ["indicators", "intervals", ["chartIndicators", "intervals"]],
       indicatorCandles: ["indicators", "candles", ["chartIndicators", "candles"]],
@@ -739,6 +746,15 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `bin_step ${args.bin_step} is outside the allowed range of [${minStep}-${maxStep}].`,
         };
+      }
+
+      // Fixed % downside range (e.g. Evil Panda: ~90%) overrides any LLM-chosen bin counts.
+      const fixedDownsidePct = Number(config.strategy.downsidePct);
+      if (Number.isFinite(fixedDownsidePct) && fixedDownsidePct > 0 && fixedDownsidePct < 100) {
+        args.downside_pct = fixedDownsidePct;
+        delete args.bins_below;
+        delete args.bins_above;
+        delete args.upside_pct;
       }
 
       const deployAmountY = Number(args.amount_y ?? args.amount_sol ?? 0);

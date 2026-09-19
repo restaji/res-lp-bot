@@ -8,6 +8,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates, degenScore } from "./tools/screening.js";
+import { confirmIndicatorPreset } from "./tools/chart-indicators.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
@@ -261,6 +262,24 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
+    // Indicator-based exit (e.g. Evil Panda: RSI(2) + BB/MACD confluence on closed candles).
+    // Opt-in via chartIndicators.exitEnabled; an unavailable indicator API never triggers a close.
+    if (config.indicators.enabled && config.indicators.exitEnabled) {
+      for (const p of positionData) {
+        if (exitMap.has(p.position) || !p.base_mint) continue;
+        try {
+          const ind = await confirmIndicatorPreset({ mint: p.base_mint, side: "exit" });
+          if (ind.enabled && ind.confirmed && !ind.skipped) {
+            const detail = ind.intervals.find((i) => i.confirmed)?.reason || ind.reason;
+            exitMap.set(p.position, `Indicator exit (${ind.preset}): ${detail}`);
+            log("state", `Indicator exit for ${p.pair}: ${detail}`);
+          }
+        } catch (e) {
+          log("cron_warn", `Indicator exit check failed for ${p.pair}: ${e.message}`);
+        }
+      }
+    }
+
     // ── Deterministic rule checks (no LLM) ──────────────────────────
     // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
     const actionMap = new Map();
@@ -301,7 +320,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
       let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
+      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Exit: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
       if (act.action === "CLAIM") line += `\n→ Claiming fees`;
       return line;

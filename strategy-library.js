@@ -90,6 +90,17 @@ const DEFAULT_STRATEGIES = {
     exit: { take_profit_pct: 10, notes: "When total return >= 10% of deployed capital: withdraw_liquidity(bps=5000) to take 50% off. Remaining 50% keeps running. Repeat at next threshold." },
     best_for: "Locking in profits without fully exiting winning positions",
   },
+  evil_panda: {
+    id: "evil_panda",
+    name: "Evil Panda",
+    author: "Advanced Bootcamp #7",
+    lp_strategy: "bid_ask",
+    token_criteria: { min_mcap: 250000, notes: "24h volume >= $1M, token fees >= 30 SOL, bin step 80/100/125. Prefer newer coins. Skip when nothing passes — do nothing in a dry market." },
+    entry: { condition: "15m price breaks above Supertrend (enforced by the indicator entry filter). One-sided SOL DLMM.", single_side: "sol", notes: "Deploy amount is fixed by config; range is forced by config.strategy.downsidePct — do not pass bins_below/bins_above." },
+    range: { type: "wide", downside_pct: 90, notes: "About -86% to -94% below active price (set via downsidePct). Dumps earn fees; the bounce is sold on the exit signal." },
+    exit: { notes: "Closed-candle confluence on 15m: RSI(2) >= 90 AND (close above BB upper OR first green MACD histogram) — executed by the indicator exit check (exitEnabled), not by judgment. Do not panic-close on dumps." },
+    best_for: "Farming fees from a coin dump with a wide range and selling into the first bounce",
+  },
 };
 
 function ensureDefaultStrategies() {

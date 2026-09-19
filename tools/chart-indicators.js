@@ -5,6 +5,72 @@ import { safeNumber } from "../utils/number.js";
 
 const DEFAULT_INTERVALS = ["5_MINUTE"];
 const DEFAULT_CANDLES = 298;
+const INTERVAL_SECONDS = { "5_MINUTE": 300, "15_MINUTE": 900 };
+
+function ema(values, period) {
+  const out = new Array(values.length).fill(null);
+  if (values.length < period) return out;
+  const k = 2 / (period + 1);
+  let prev = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out[period - 1] = prev;
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
+// MACD(12,26,9) histogram aligned to `closes`; null until enough candles exist.
+function macdHistogram(closes) {
+  const fast = ema(closes, 12);
+  const slow = ema(closes, 26);
+  const macd = closes.map((_, i) => (fast[i] != null && slow[i] != null ? fast[i] - slow[i] : null));
+  const start = macd.findIndex((v) => v != null);
+  const hist = new Array(closes.length).fill(null);
+  if (start < 0) return hist;
+  const signal = ema(macd.slice(start), 9);
+  for (let i = 0; i < signal.length; i++) {
+    if (signal[i] != null) hist[start + i] = macd[start + i] - signal[i];
+  }
+  return hist;
+}
+
+// The API's last candle is usually still forming; strategy signals need CLOSED candles.
+function lastClosedIndex(candles, interval, fetchedAtMs) {
+  const seconds = INTERVAL_SECONDS[interval] ?? 900;
+  const nowSec = (Number(fetchedAtMs) || Date.now()) / 1000;
+  let idx = candles.length - 1;
+  if (idx >= 0 && Number(candles[idx].time) + seconds > nowSec) idx -= 1;
+  return idx;
+}
+
+// Evil Panda exit: RSI(n) >= overbought AND (close > BB upper OR first green MACD histogram).
+function evaluateEvilPandaExit(payload, interval, summary) {
+  const overbought = Number(config.indicators.rsiOverbought ?? 90);
+  const candles = Array.isArray(payload?.candles) ? payload.candles : [];
+  const idx = lastClosedIndex(candles, interval, payload?.meta?.fetchedAt);
+  if (idx < 1) {
+    return { confirmed: false, reason: "Not enough closed candles", signal: summary };
+  }
+  const candle = candles[idx];
+  const rsiPoint = (payload?.indicators?.rsi || []).find((p) => p && p.time === candle.time);
+  const bbPoint = (payload?.indicators?.bollinger || []).find((p) => p && p.time === candle.time);
+  const rsi = safeNum(rsiPoint?.value);
+  const upper = safeNum(bbPoint?.upper);
+  const close = safeNum(candle.close);
+  const hist = macdHistogram(candles.slice(0, idx + 1).map((c) => Number(c.close)));
+  const h = hist[idx];
+  const hPrev = hist[idx - 1];
+
+  const rsiHit = rsi != null && rsi >= overbought;
+  const bbHit = close != null && upper != null && close > upper;
+  const macdHit = h != null && hPrev != null && h > 0 && hPrev <= 0;
+  return {
+    confirmed: rsiHit && (bbHit || macdHit),
+    reason: `closed ${interval} candle: RSI ${rsi ?? "n/a"} ${rsiHit ? ">=" : "<"} ${overbought}, close ${bbHit ? ">" : "<="} BB upper, MACD first green ${macdHit ? "yes" : "no"}`,
+    signal: { ...summary, closedRsi: rsi, closedClose: close, closedUpperBand: upper, macdHistogram: h, prevMacdHistogram: hPrev },
+  };
+}
 
 function normalizeIntervals(intervals) {
   const list = Array.isArray(intervals) ? intervals : DEFAULT_INTERVALS;
@@ -42,7 +108,7 @@ function buildSignalSummary(payload) {
   };
 }
 
-function evaluatePreset(side, preset, payload) {
+function evaluatePreset(side, preset, payload, interval) {
   const summary = buildSignalSummary(payload);
   const oversold = Number(config.indicators.rsiOversold ?? 30);
   const overbought = Number(config.indicators.rsiOverbought ?? 80);
@@ -67,6 +133,10 @@ function evaluatePreset(side, preset, payload) {
     close <= level;
 
   switch (preset) {
+    case "evil_panda":
+      if (side === "exit") return evaluateEvilPandaExit(payload, interval, summary);
+      // entry: wait for price to break above Supertrend (same as supertrend_break)
+    // eslint-disable-next-line no-fallthrough
     case "supertrend_break":
       return side === "entry"
         ? {
@@ -244,7 +314,7 @@ export async function confirmIndicatorPreset({
   for (const interval of targets) {
     try {
       const payload = await fetchChartIndicatorsForMint(mint, { interval, refresh });
-      const evaluation = evaluatePreset(side, preset, payload);
+      const evaluation = evaluatePreset(side, preset, payload, interval);
       results.push({
         interval,
         ok: true,

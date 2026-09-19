@@ -139,6 +139,8 @@ export const config = {
     minBinsBelow: strategyMinBinsBelow,
     maxBinsBelow: strategyMaxBinsBelow,
     defaultBinsBelow: strategyDefaultBinsBelow,
+    // When set (e.g. 90), every deploy uses this % downside range instead of the volatility-based bin formula.
+    downsidePct:  u.downsidePct  ?? null,
   },
 
   // ─── Scheduling ─────────────────────────
@@ -253,6 +255,8 @@ export const config = {
     enabled: indicatorUserConfig.enabled ?? false,
     entryPreset: indicatorUserConfig.entryPreset ?? "supertrend_break",
     exitPreset: indicatorUserConfig.exitPreset ?? "supertrend_break",
+    // Off by default: exit presets only close positions when this is true.
+    exitEnabled: indicatorUserConfig.exitEnabled ?? false,
     rsiLength: indicatorUserConfig.rsiLength ?? 2,
     intervals: Array.isArray(indicatorUserConfig.intervals)
       ? indicatorUserConfig.intervals
