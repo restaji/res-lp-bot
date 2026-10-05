@@ -16,6 +16,10 @@ const USER_CONFIG_PATH = repoPath("user-config.json");
 const LESSONS_FILE = repoPath("lessons.json");
 const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
+// Aging: lessons fade over time. Half-life = ln(2)/DECAY_PER_DAY days.
+// Default 0.01/day = ~69 day half-life (gentle). Pinned bypasses the floor.
+const LESSON_DECAY_PER_DAY = Number(process.env.LESSON_DECAY_PER_DAY ?? 0.01);
+const LESSON_MIN_PROMPT_CONFIDENCE = Number(process.env.LESSON_MIN_PROMPT_CONFIDENCE ?? 0.08);
 const PERFORMANCE_SIGNAL_FIELDS = [
   "organic_score",
   "fee_tvl_ratio",
@@ -470,6 +474,14 @@ function nudge(current, target, maxChange) {
   return current + Math.sign(delta) * maxDelta;
 }
 
+/** Exponential decay: confidence halves every ln(2)/DECAY_PER_DAY days. */
+function computeEffectiveConfidence(lesson, now = Date.now()) {
+  const base = lesson.confidence ?? 0.5;
+  const anchor = lesson.last_validated_at || lesson.created_at || new Date(now).toISOString();
+  const daysSince = Math.max(0, (now - new Date(anchor).getTime()) / 86_400_000);
+  return Math.max(0, Math.min(1, base * Math.exp(-LESSON_DECAY_PER_DAY * daysSince)));
+}
+
 // ─── Manual Lessons ────────────────────────────────────────────
 
 /**
@@ -623,9 +635,18 @@ export function getLessonsForPrompt(opts = {}) {
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);
 
+  // ── Aging: compute effective confidence, drop lessons below the floor ──
+  // Pinned lessons bypass the floor (operator controls via pin/unpin).
+  const now = Date.now();
+  const live = data.lessons.filter(
+    (l) => l.pinned || computeEffectiveConfidence(l, now) >= LESSON_MIN_PROMPT_CONFIDENCE,
+  );
+  const agedOut = data.lessons.length - live.length;
+  if (agedOut > 0) log("lessons", `${agedOut} lesson(s) aged below floor (${LESSON_MIN_PROMPT_CONFIDENCE}); hidden from prompt`);
+
   // ── Tier 1: Pinned ──────────────────────────────────────────────
   // Respect role even for pinned lessons — a pinned SCREENER lesson shouldn't pollute MANAGER
-  const pinned = data.lessons
+  const pinned = live
     .filter((l) => l.pinned && (!l.role || l.role === agentType || agentType === "GENERAL"))
     .sort(byPriority)
     .slice(0, PINNED_CAP);
@@ -634,7 +655,7 @@ export function getLessonsForPrompt(opts = {}) {
 
   // ── Tier 2: Role-matched ────────────────────────────────────────
   const roleTags = ROLE_TAGS[agentType] || [];
-  const roleMatched = data.lessons
+  const roleMatched = live
     .filter((l) => {
       if (usedIds.has(l.id)) return false;
       // Include if: lesson has no role restriction OR matches this role
@@ -651,7 +672,7 @@ export function getLessonsForPrompt(opts = {}) {
   // ── Tier 3: Recent fill ─────────────────────────────────────────
   const remainingBudget = RECENT_CAP - pinned.length - roleMatched.length;
   const recent = remainingBudget > 0
-    ? data.lessons
+    ? live
         .filter((l) => !usedIds.has(l.id))
         .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
         .slice(0, remainingBudget)
