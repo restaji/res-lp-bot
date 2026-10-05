@@ -514,15 +514,25 @@ const toolMap = {
       }
     }
 
-    // Auto-scale fee/volume when timeframe changes (unless user set them explicitly in same call).
-    if (applied.timeframe != null && applied.minFeeActiveTvlRatio == null && applied.minVolume == null) {
+    // Auto-scale fee/volume when timeframe changes — per-field, so setting one of them
+    // explicitly in the same call doesn't suppress scaling of the other.
+    if (applied.timeframe != null) {
       const tf = normalizeTimeframe(applied.timeframe);
       applied.timeframe = tf;
       const scaled = scaleScreeningToTimeframe(tf);
-      applied.minFeeActiveTvlRatio = scaled.minFeeActiveTvlRatio;
-      applied.minVolume = scaled.minVolume;
-      applied._timeframeScaled = true;
-      log("config", `timeframe ${tf} → auto-scaled minFeeActiveTvlRatio=${scaled.minFeeActiveTvlRatio}, minVolume=${scaled.minVolume}`);
+      const scaledFields = [];
+      if (applied.minFeeActiveTvlRatio == null) {
+        applied.minFeeActiveTvlRatio = scaled.minFeeActiveTvlRatio;
+        scaledFields.push(`minFeeActiveTvlRatio=${scaled.minFeeActiveTvlRatio}`);
+      }
+      if (applied.minVolume == null) {
+        applied.minVolume = scaled.minVolume;
+        scaledFields.push(`minVolume=${scaled.minVolume}`);
+      }
+      if (scaledFields.length > 0) {
+        applied._timeframeScaled = true;
+        log("config", `timeframe ${tf} → auto-scaled ${scaledFields.join(", ")}`);
+      }
     }
 
     // Apply to live config immediately after the persisted config is known-good.
@@ -867,7 +877,7 @@ async function runSafetyChecks(name, args) {
         // Clamp instead of blocking: a block burns the one-shot deploy lock and the cycle deploys nothing.
         let clamped = config.risk.maxDeployAmount;
         try {
-          clamped = Math.min(clamped, computeDeployAmount((await getWalletBalances()).sol));
+          clamped = Math.min(clamped, computeDeployAmount((await getWalletBalances({ force: true })).sol));
         } catch { /* keep the max cap */ }
         log("safety_clamp", `deploy amount ${amountY} SOL exceeds max ${config.risk.maxDeployAmount} — clamped to ${clamped} SOL`);
         amountY = clamped;
@@ -875,9 +885,9 @@ async function runSafetyChecks(name, args) {
         delete args.amount_sol;
       }
 
-      // Check SOL balance
+      // Check SOL balance (force fresh — safety check, no cache)
       if (process.env.DRY_RUN !== "true") {
-        const balance = await getWalletBalances();
+        const balance = await getWalletBalances({ force: true });
         const gasReserve = config.management.gasReserve;
         const minRequired = amountY + gasReserve;
         if (balance.sol < minRequired) {

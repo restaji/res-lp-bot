@@ -535,7 +535,7 @@ export async function deployPosition({
   // If no explicit SOL amount is provided, fall back to the configured dynamic deploy size.
   const fallbackAmountY =
     amount_y == null && amount_sol == null
-      ? computeDeployAmount((await getWalletBalances()).sol)
+      ? computeDeployAmount((await getWalletBalances({ force: true })).sol)
       : 0;
   const finalAmountY = Number(amount_y ?? amount_sol ?? fallbackAmountY);
   const finalAmountX = Number(amount_x ?? 0);

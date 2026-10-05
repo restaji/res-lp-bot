@@ -233,7 +233,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     if (!silent && telegramEnabled()) {
       liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
     }
-    const livePositions = await getMyPositions({ force: true }).catch(() => null);
+    const livePositions = await getMyPositions({ force: false }).catch(() => null);
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {
@@ -350,7 +350,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
 
     // Trigger screening after management
-    const afterPositions = await getMyPositions({ force: true }).catch(() => null);
+    const afterPositions = await getMyPositions({ force: false }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
       log("cron", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`);
@@ -389,7 +389,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let liveMessage = null;
   let screenReport = null;
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
+    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: false }), getWalletBalances()]);
     if (prePositions.total_positions >= config.risk.maxPositions) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
       screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
@@ -797,13 +797,16 @@ Summarize the current portfolio health, total fees earned, and performance of al
       if (Date.now() - _screeningLastTriggered < oppCooldownMs) return;
       _opportunityPollBusy = true;
       try {
-        const [positions, balance] = await Promise.all([
-          getMyPositions({ force: true, silent: true }).catch(() => null),
-          getWalletBalances().catch(() => null),
-        ]);
-        if (!positions || (positions.total_positions ?? 0) >= config.risk.maxPositions) return;
+        // Cheap balance pre-check first: skip the expensive getProgramAccounts
+        // call when the wallet clearly can't fund a deploy. With wallet balance
+        // cached 30s in tools/wallet.js, this is ~2 wallet API calls/min instead
+        // of 80, and we save ~80 getProgramAccounts calls/hour too.
+        const balance = await getWalletBalances().catch(() => null);
         const minRequired = config.management.deployAmountSol + config.management.gasReserve;
         if (process.env.DRY_RUN !== "true" && (!balance || balance.sol < minRequired)) return;
+
+        const positions = await getMyPositions({ force: false, silent: true }).catch(() => null);
+        if (!positions || (positions.total_positions ?? 0) >= config.risk.maxPositions) return;
 
         const top = await getTopCandidates({ limit: config.opportunity.limit }).catch(() => null);
         const candidates = (top?.candidates || []).slice().sort((a, b) => degenScore(b, config.opportunity) - degenScore(a, config.opportunity));
@@ -1449,7 +1452,7 @@ async function telegramHandler(msg) {
 
   if (text === "/wallet" || text === "/status") {
     try {
-      const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
+      const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: false })]);
       const suffix = text === "/status" && positions.total_positions
         ? `\n\nUse /positions for the numbered list.`
         : "";
@@ -1467,7 +1470,7 @@ async function telegramHandler(msg) {
 
   if (text === "/positions") {
     try {
-      const { positions, total_positions } = await getMyPositions({ force: true });
+      const { positions, total_positions } = await getMyPositions({ force: false });
       if (total_positions === 0) { await sendMessage("No open positions."); return; }
       const cur = config.management.solMode ? "◎" : "$";
       const lines = positions.map((p, i) => {
@@ -1485,7 +1488,7 @@ async function telegramHandler(msg) {
   if (poolMatch) {
     try {
       const idx = parseInt(poolMatch[1]) - 1;
-      const { positions } = await getMyPositions({ force: true });
+      const { positions } = await getMyPositions({ force: false });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       await sendMessage([
@@ -1508,7 +1511,7 @@ async function telegramHandler(msg) {
   if (closeMatch) {
     try {
       const idx = parseInt(closeMatch[1]) - 1;
-      const { positions } = await getMyPositions({ force: true });
+      const { positions } = await getMyPositions({ force: false });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       await sendMessage(`Closing ${pos.pair}...`);
@@ -1526,7 +1529,7 @@ async function telegramHandler(msg) {
 
   if (text === "/closeall") {
     try {
-      const { positions } = await getMyPositions({ force: true });
+      const { positions } = await getMyPositions({ force: false });
       if (!positions.length) { await sendMessage("No open positions."); return; }
       await sendMessage(`Closing ${positions.length} position(s)...`);
       const results = [];
@@ -1550,7 +1553,7 @@ async function telegramHandler(msg) {
     try {
       const idx = parseInt(setMatch[1]) - 1;
       const note = setMatch[2].trim();
-      const { positions } = await getMyPositions({ force: true });
+      const { positions } = await getMyPositions({ force: false });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       setPositionInstruction(pos.position, note);
@@ -1796,7 +1799,7 @@ if (isMain && isTTY) {
   try {
     const [wallet, positions, { candidates, total_eligible, total_screened }] = await Promise.all([
       getWalletBalances(),
-      getMyPositions({ force: true }),
+      getMyPositions({ force: false }),
       getTopCandidates({ limit: 5 }),
     ]);
 
@@ -1896,7 +1899,7 @@ Commands:
 
     if (input === "/status") {
       await runBusy(async () => {
-        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: true })]);
+        const [wallet, positions] = await Promise.all([getWalletBalances(), getMyPositions({ force: false })]);
         console.log(`\nWallet: ${wallet.sol} SOL  ($${wallet.sol_usd})`);
         console.log(`Positions: ${positions.total_positions}`);
         for (const p of positions.positions) {

@@ -55,8 +55,22 @@ function getJupiterReferralParams() {
 /**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
+ *
+ * Accepts an optional `{ force: true }` arg to bypass the 30s cache (used by
+ * deploy safety checks that need the freshest balance). On Helius 429, returns
+ * the last cached balance instead of zero so a rate-limit burst doesn't make
+ * the bot think the wallet is empty.
  */
-export async function getWalletBalances() {
+const WALLET_BALANCE_TTL_MS = 30_000;
+let _walletBalanceCache = null; // { data, fetchedAt }
+
+export async function getWalletBalances(args = {}) {
+  // Cache hit unless caller explicitly opts out
+  if (!args.force && _walletBalanceCache) {
+    const age = Date.now() - _walletBalanceCache.fetchedAt;
+    if (age <= WALLET_BALANCE_TTL_MS) return _walletBalanceCache.data;
+  }
+
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
@@ -72,8 +86,15 @@ export async function getWalletBalances() {
 
   try {
     const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url);
-    
+
+    // Retry once on 429 with 1s backoff. Longer retry chains live at the caller;
+    // here we only need to absorb a single rate-limit burst.
+    let res = await fetch(url);
+    if (res.status === 429) {
+      await new Promise((r) => setTimeout(r, 1000));
+      res = await fetch(url);
+    }
+
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);
     }
@@ -98,17 +119,29 @@ export async function getWalletBalances() {
       usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
     }));
 
-    return {
+    const result = {
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
       sol_price: Math.round(solPrice * 100) / 100,
       sol_usd: Math.round(solUsd * 100) / 100,
-      usdc: Math.round(usdcBalance * 100) / 100,
+      usdc: Math.round(usdcBalance * 1e6) / 1e6,
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
     };
+
+    _walletBalanceCache = { data: result, fetchedAt: Date.now() };
+    return result;
   } catch (error) {
     log("wallet_error", error.message);
+
+    // If we have ANY cached balance (even stale), return it instead of zero.
+    // This stops a 429 burst from making the bot think it's broke.
+    if (_walletBalanceCache) {
+      const ageS = Math.round((Date.now() - _walletBalanceCache.fetchedAt) / 1000);
+      log("wallet_warn", `Returning stale cache (age=${ageS}s) due to: ${error.message}`);
+      return _walletBalanceCache.data;
+    }
+
     return {
       wallet: walletAddress,
       sol: 0,
@@ -117,6 +150,7 @@ export async function getWalletBalances() {
       usdc: 0,
       tokens: [],
       total_usd: 0,
+      stale: false,
       error: error.message,
     };
   }
