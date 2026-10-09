@@ -1058,6 +1058,7 @@ function settingValue(key) {
     minBinsBelow: config.strategy.minBinsBelow,
     maxBinsBelow: config.strategy.maxBinsBelow,
     defaultBinsBelow: config.strategy.defaultBinsBelow,
+    downsidePct: config.strategy.downsidePct,
     deployAmountSol: config.management.deployAmountSol,
     gasReserve: config.management.gasReserve,
     maxPositions: config.risk.maxPositions,
