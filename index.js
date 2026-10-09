@@ -1640,6 +1640,12 @@ async function telegramHandler(msg) {
     return;
   }
 
+  if (text === "/stop") {
+    await sendMessage("🛑 Shutting down agent... PM2 restart required to bring it back.").catch(() => {});
+    shutdown("telegram_stop");
+    return;
+  }
+
   if (text === "/hive" || text === "/hive pull") {
     try {
       const enabled = isHiveMindEnabled();
