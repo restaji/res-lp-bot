@@ -933,7 +933,7 @@ function getDeterministicCloseRule(position, managementConfig) {
     return false;
   })();
 
-  if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct <= managementConfig.stopLossPct) {
+  if (!pnlSuspect && position.pnl_pct != null && managementConfig.stopLossPct != null && position.pnl_pct <= managementConfig.stopLossPct) {
     return { action: "CLOSE", rule: 1, reason: "stop loss" };
   }
   if (!pnlSuspect && position.pnl_pct != null && position.pnl_pct >= managementConfig.takeProfitPct) {
