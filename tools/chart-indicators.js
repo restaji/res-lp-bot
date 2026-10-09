@@ -340,11 +340,11 @@ export async function confirmIndicatorPreset({
   if (successful.length === 0) {
     return {
       enabled: true,
-      confirmed: true,
+      confirmed: false,
       skipped: true,
       preset,
       side,
-      reason: "Indicator API unavailable; falling back to existing logic",
+      reason: "Indicator API unavailable; deployment blocked (fail-closed)",
       intervals: results,
     };
   }
