@@ -9,6 +9,9 @@ node_modules/
 
 # User config (contains RPC URL, wallet key, API keys)
 user-config.json
+user-config.json.save
+user-config.json.bak-*
+user-config.json.bak.*
 
 # GMGN fee-source config (contains API key)
 gmgn-config.json
