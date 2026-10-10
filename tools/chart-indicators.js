@@ -315,6 +315,11 @@ export async function confirmIndicatorPreset({
     try {
       const payload = await fetchChartIndicatorsForMint(mint, { interval, refresh });
       const evaluation = evaluatePreset(side, preset, payload, interval);
+      if (process.env.LOG_LEVEL === "debug" || process.env.INDICATOR_DEBUG === "true") {
+        const st = payload?.latest?.supertrend || {};
+        const states = payload?.latest?.states || {};
+        log("indicators", `${side} ${preset} ${mint.slice(0, 8)} interval=${interval} supertrendBreakUp=${!!states.supertrendBreakUp} direction=${st.direction || "?"} value=${st.value ?? "?"} → confirmed=${!!evaluation.confirmed} skipped=${!!evaluation.skipped}`);
+      }
       results.push({
         interval,
         ok: true,
