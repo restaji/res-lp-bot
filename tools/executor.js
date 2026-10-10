@@ -22,6 +22,7 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
+import { checkIndicator } from "./chart-indicators.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
 import { REPO_ROOT, repoPath } from "../repo-root.js";
@@ -260,6 +261,7 @@ const toolMap = {
   get_my_positions: getMyPositions,
   get_wallet_positions: getWalletPositions,
   search_pools: searchPools,
+  check_indicator: checkIndicator,
   get_token_info: getTokenInfo,
   get_token_holders: getTokenHolders,
   get_token_narrative: getTokenNarrative,

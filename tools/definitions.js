@@ -586,7 +586,7 @@ BAD narrative signals (caution or skip):
     type: "function",
     function: {
       name: "search_pools",
-      description: `Search for DLMM pools by token symbol, ticker, or contract address (CA).
+      description: `Search Meteora DLMM pools by token symbol, name, or contract address.
 Use this when the user asks to deploy into a specific token or pool by name/CA,
 or when you want to find pools for a specific token outside of the normal screening flow.
 
@@ -606,6 +606,47 @@ Returns pool address, name, bin_step, fee %, TVL, volume, and token mints.`,
           }
         },
         required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_indicator",
+      description: `Fetch current chart-indicator state for a single token mint on demand.
+Use this when the user asks about a specific pool's indicator readings — for example
+"what's the Supertrend state on SIB-SOL?", "is RSI overbought on PQC?", "why did this
+pool pass/reject screening?".
+
+Read-only: calls the Agent Meridian /chart-indicators/ API and returns structured
+indicator values. Does NOT run screening, does NOT execute any trades.
+
+Returns:
+  - lastCandle: { close, high, low, open, time, isClosed }
+  - supertrend: { value, direction ('bullish'|'bearish'|null), breakUp, breakDown }
+  - rsi: { value, length, overbought, oversold, signal }
+  - bollinger: { upper, middle, lower, closeAboveUpper }
+  - macd: { histogram, previousHistogram, firstGreenHistogram }
+  - preset: { name, side, confirmed, reason } — preset evaluation against the entry/exit preset`,
+      parameters: {
+        type: "object",
+        properties: {
+          mint: {
+            type: "string",
+            description: "Token mint address (Solana base58)"
+          },
+          side: {
+            type: "string",
+            enum: ["entry", "exit"],
+            description: "Which side preset to evaluate against (entry=entryPreset, exit=exitPreset). Default entry."
+          },
+          interval: {
+            type: "string",
+            enum: ["5_MINUTE", "15_MINUTE"],
+            description: "Candle interval. Default 15_MINUTE."
+          }
+        },
+        required: ["mint"]
       }
     }
   },

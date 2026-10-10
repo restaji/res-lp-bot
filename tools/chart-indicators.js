@@ -372,3 +372,106 @@ export async function confirmIndicatorPreset({
     intervals: results,
   };
 }
+
+/**
+ * Fetch chart indicator state for a single mint. Used by the
+ * `check_indicator` LLM tool for on-demand analysis (debugging why
+ * a pool passed/rejected screening, comparing conditions, etc.).
+ *
+ * Read-only — calls Agent Meridian chart-indicators API and shapes
+ * the response for LLM consumption. Returns raw values + preset
+ * evaluation so the LLM can answer questions like "what's RSI on
+ * SIB-SOL?" or "is ST bullish on PQC?" without re-running screening.
+ */
+export async function checkIndicator({
+  mint,
+  side = "entry",
+  interval = "15_MINUTE",
+  refresh = false,
+} = {}) {
+  if (!mint || typeof mint !== "string") {
+    return { error: "mint is required", confirmed: false };
+  }
+  const normalizedInterval = String(interval || "15_MINUTE").trim().toUpperCase();
+  const payload = await fetchChartIndicatorsForMint(mint, { interval: normalizedInterval, refresh });
+  const latest = payload?.latest || {};
+  const states = latest.states || {};
+  const st = latest.supertrend || {};
+  const rsi = latest.rsi || {};
+  const bb = latest.bollinger || {};
+  const lastCandle = latest.candle || null;
+  const previousCandle = latest.previousCandle || null;
+  const macdLine = latest.macd || {};
+  const macdHist = latest.macdHistogram;
+  const macdHistPrev = latest.macdHistogramPrevious;
+
+  const close = safeNumber(lastCandle?.close);
+  const rsiValue = safeNumber(rsi.value);
+  const stValue = safeNumber(st.value);
+  const bbUpper = safeNumber(bb.upper);
+  const bbMiddle = safeNumber(bb.middle);
+  const bbLower = safeNumber(bb.lower);
+  const macdHistogramCurrent = safeNumber(macdHist);
+  const macdHistogramPrevious = safeNumber(macdHistPrev);
+
+  const overbought = config.indicators.rsiOverbought ?? 90;
+  const oversold = config.indicators.rsiOversold ?? 30;
+  const rsiSignal = rsiValue == null
+    ? null
+    : rsiValue >= overbought ? "overbought" : rsiValue <= oversold ? "oversold" : "neutral";
+
+  const bbHit = close != null && bbUpper != null && close > bbUpper;
+  const macdFirstGreen = macdHistogramCurrent != null && macdHistogramPrevious != null && macdHistogramCurrent > 0 && macdHistogramPrevious <= 0;
+
+  const preset = side === "entry" ? config.indicators.entryPreset : config.indicators.exitPreset;
+  const evaluation = evaluatePreset(side, preset, payload, normalizedInterval);
+
+  return {
+    mint,
+    interval: normalizedInterval,
+    fetchedAt: payload?.meta?.fetchedAt || new Date().toISOString(),
+    lastCandle: lastCandle && {
+      time: lastCandle.time,
+      open: safeNumber(lastCandle.open),
+      high: safeNumber(lastCandle.high),
+      low: safeNumber(lastCandle.low),
+      close,
+      isClosed: !!lastCandle.isClosed,
+    },
+    previousCandle: previousCandle && {
+      time: previousCandle.time,
+      close: safeNumber(previousCandle.close),
+    },
+    supertrend: {
+      value: stValue,
+      direction: st.direction || null,
+      breakUp: !!states.supertrendBreakUp,
+      breakDown: !!states.supertrendBreakDown,
+    },
+    rsi: {
+      value: rsiValue,
+      length: config.indicators.rsiLength ?? 2,
+      overbought,
+      oversold,
+      signal: rsiSignal,
+    },
+    bollinger: {
+      upper: bbUpper,
+      middle: bbMiddle,
+      lower: bbLower,
+      closeAboveUpper: bbHit,
+    },
+    macd: {
+      histogram: macdHistogramCurrent,
+      previousHistogram: macdHistogramPrevious,
+      firstGreenHistogram: macdFirstGreen,
+    },
+    preset: {
+      name: preset,
+      side,
+      confirmed: !!evaluation.confirmed,
+      skipped: !!evaluation.skipped,
+      reason: evaluation.reason || null,
+    },
+  };
+}
