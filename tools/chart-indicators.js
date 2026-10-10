@@ -140,7 +140,7 @@ function evaluatePreset(side, preset, payload, interval) {
     case "supertrend_break":
       return side === "entry"
         ? {
-            confirmed: summary.supertrendBreakUp || (isBullish && close != null && summary.supertrendValue != null && close >= summary.supertrendValue),
+            confirmed: summary.supertrendBreakUp,
             reason: summary.supertrendBreakUp ? "Supertrend flipped bullish" : "Price is above bullish Supertrend",
             signal: summary,
           }
