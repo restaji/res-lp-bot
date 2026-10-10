@@ -108,7 +108,13 @@ function buildSignalSummary(payload) {
   };
 }
 
-function evaluatePreset(side, preset, payload, interval) {
+export function isIndicatorConfirmationApproved(confirmation) {
+  return confirmation?.enabled === true &&
+    confirmation.confirmed === true &&
+    confirmation.skipped === false;
+}
+
+export function evaluatePreset(side, preset, payload, interval) {
   const summary = buildSignalSummary(payload);
   const oversold = Number(config.indicators.rsiOversold ?? 30);
   const overbought = Number(config.indicators.rsiOverbought ?? 80);
@@ -140,8 +146,8 @@ function evaluatePreset(side, preset, payload, interval) {
     case "supertrend_break":
       return side === "entry"
         ? {
-            confirmed: summary.supertrendBreakUp || (isBullish && close != null && summary.supertrendValue != null && close >= summary.supertrendValue),
-            reason: summary.supertrendBreakUp ? "Supertrend flipped bullish" : "Price is above bullish Supertrend",
+            confirmed: summary.supertrendBreakUp,
+            reason: summary.supertrendBreakUp ? "Supertrend flipped bullish" : "No fresh bullish Supertrend break",
             signal: summary,
           }
         : {

@@ -22,7 +22,11 @@ import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsO
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config, reloadScreeningThresholds, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
-import { checkIndicator } from "./chart-indicators.js";
+import {
+  checkIndicator,
+  confirmIndicatorPreset,
+  isIndicatorConfirmationApproved,
+} from "./chart-indicators.js";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
 import { REPO_ROOT, repoPath } from "../repo-root.js";
@@ -173,7 +177,7 @@ async function validateDeployPoolThresholds(args) {
     entry_holders: numberOrNull(detail?.base_token_holders ?? detail?.token_x?.holders),
   };
 
-  return { pass: true, entryMarketData };
+  return { pass: true, entryMarketData, baseMint };
 }
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -898,6 +902,30 @@ async function runSafetyChecks(name, args) {
             reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
           };
         }
+      }
+
+      // Recheck with a fresh chart-indicator response immediately before deploy.
+      if (!poolThresholds.baseMint) {
+        return { pass: false, reason: "Cannot verify entry indicator: pool base mint unavailable." };
+      }
+      let entryConfirmation;
+      try {
+        entryConfirmation = await confirmIndicatorPreset({
+          mint: poolThresholds.baseMint,
+          side: "entry",
+          refresh: true,
+        });
+      } catch (error) {
+        return {
+          pass: false,
+          reason: `Entry indicator check failed; deployment blocked: ${error.message}`,
+        };
+      }
+      if (!isIndicatorConfirmationApproved(entryConfirmation)) {
+        return {
+          pass: false,
+          reason: `Entry indicator not confirmed; deployment blocked: ${entryConfirmation?.reason || "no confirmation"}`,
+        };
       }
 
       return { pass: true };

@@ -3,7 +3,7 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
-import { confirmIndicatorPreset } from "./chart-indicators.js";
+import { confirmIndicatorPreset, isIndicatorConfirmationApproved } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
@@ -706,9 +706,10 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     const confirmedEligible = eligible.filter((pool) => {
       const confirmation = confirmationByPool.get(pool.pool);
       pool.indicator_confirmation = confirmation || null;
-      if (!confirmation || confirmation.confirmed) return true;
-      pushFilteredReason(filteredOut, pool, `indicator reject: ${confirmation.reason}`);
-      log("screening", `Indicator rejected ${pool.name} (${pool.pool.slice(0, 8)}): ${confirmation.reason}`);
+      if (isIndicatorConfirmationApproved(confirmation)) return true;
+      const reason = confirmation?.reason || "Indicator confirmation missing or unavailable";
+      pushFilteredReason(filteredOut, pool, `indicator reject: ${reason}`);
+      log("screening", `Indicator rejected ${pool.name} (${pool.pool.slice(0, 8)}): ${reason}`);
       return false;
     });
     eligible.splice(0, eligible.length, ...confirmedEligible);
