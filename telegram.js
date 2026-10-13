@@ -144,15 +144,80 @@ async function postTelegramRaw(method, body) {
   }
 }
 
+function escapeTelegramHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatInlineTelegramMarkdown(text) {
+  const codeSpans = [];
+  const placeholder = (index) => `\u0000TG_INLINE_CODE_${index}\u0000`;
+  const source = String(text).replace(/`([^`\n]+)`/g, (_match, code) => {
+    const token = placeholder(codeSpans.length);
+    codeSpans.push(`<code>${escapeTelegramHtml(code)}</code>`);
+    return token;
+  });
+
+  let html = escapeTelegramHtml(source);
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, url) =>
+    `<a href=\"${url}\">${label}</a>`
+  );
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  html = html.replace(/__([^_\n]+)__/g, "<b>$1</b>");
+  html = html.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
+  html = html.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:;])/g, "$1<i>$2</i>");
+
+  for (let i = 0; i < codeSpans.length; i++) {
+    html = html.replace(placeholder(i), codeSpans[i]);
+  }
+  return html;
+}
+
+export function formatTelegramHtml(text) {
+  const codeBlocks = [];
+  const source = String(text ?? "").slice(0, 4096).replace(/\r\n?/g, "\n");
+  const fenced = source.replace(/```[^\n]*\n([\s\S]*?)(?:\n```|$)/g, (_match, code) => {
+    const token = `\u0000TG_FENCED_CODE_${codeBlocks.length}\u0000`;
+    codeBlocks.push(`<pre>${escapeTelegramHtml(code.replace(/\n$/, ""))}</pre>`);
+    return token;
+  });
+
+  let html = fenced.split("\n").map((line) => {
+    if (/^\u0000TG_FENCED_CODE_\d+\u0000$/.test(line)) return line;
+    const heading = line.match(/^\s{0,3}#{1,6}\s+(.+)$/);
+    if (heading) return `<b>${formatInlineTelegramMarkdown(heading[1])}</b>`;
+    const bullet = line.match(/^(\s*)[-*]\s+(.+)$/);
+    if (bullet) return `${bullet[1]}• ${formatInlineTelegramMarkdown(bullet[2])}`;
+    const numbered = line.match(/^(\s*)(\d+[.)])\s+(.+)$/);
+    if (numbered) return `${numbered[1]}${numbered[2]} ${formatInlineTelegramMarkdown(numbered[3])}`;
+    const quote = line.match(/^\s{0,3}>\s?(.*)$/);
+    if (quote) return `❝ ${formatInlineTelegramMarkdown(quote[1])}`;
+    return formatInlineTelegramMarkdown(line);
+  }).join("\n");
+
+  for (let i = 0; i < codeBlocks.length; i++) {
+    html = html.replace(`\u0000TG_FENCED_CODE_${i}\u0000`, codeBlocks[i]);
+  }
+  return html;
+}
+
 export async function sendMessage(text) {
   if (!TOKEN || !chatId) return;
-  return postTelegram("sendMessage", { text: String(text).slice(0, 4096) });
+  return postTelegram("sendMessage", {
+    text: formatTelegramHtml(text),
+    parse_mode: "HTML",
+  });
 }
 
 export async function sendMessageWithButtons(text, inlineKeyboard) {
   if (!TOKEN || !chatId) return;
   return postTelegram("sendMessage", {
-    text: String(text).slice(0, 4096),
+    text: formatTelegramHtml(text),
+    parse_mode: "HTML",
     reply_markup: { inline_keyboard: inlineKeyboard },
   });
 }
@@ -166,7 +231,8 @@ export async function editMessage(text, messageId) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
-    text: String(text).slice(0, 4096),
+    text: formatTelegramHtml(text),
+    parse_mode: "HTML",
   });
 }
 
@@ -174,7 +240,8 @@ export async function editMessageWithButtons(text, messageId, inlineKeyboard) {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
-    text: String(text).slice(0, 4096),
+    text: formatTelegramHtml(text),
+    parse_mode: "HTML",
     reply_markup: { inline_keyboard: inlineKeyboard },
   });
 }
