@@ -110,11 +110,8 @@ export const config = {
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
-    repeatDeployCooldownEnabled: u.repeatDeployCooldownEnabled ?? true,
-    repeatDeployCooldownTriggerCount: u.repeatDeployCooldownTriggerCount ?? 3,
-    repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
-    repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
-    repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
+    tokenCooldownAfterDeployEnabled: u.tokenCooldownAfterDeployEnabled ?? u.repeatDeployCooldownEnabled ?? true,
+    tokenCooldownAfterDeployHours: u.tokenCooldownAfterDeployHours ?? u.repeatDeployCooldownHours ?? 12,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           "stopLossPct" in u ? u.stopLossPct : (u.emergencyPriceDropPct ?? -50),
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,

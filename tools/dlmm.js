@@ -24,12 +24,43 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import {
+  isBaseMintOnCooldown,
+  isPoolOnCooldown,
+  reserveBaseMintDeploy,
+  releaseBaseMintDeploy,
+  recordBaseMintDeployCooldown,
+} from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
 import { computePositions, fetchDlmmPnlForPool } from "./pnl.js";
+
+function reserveTokenCooldownForDeploy(cooldownMint) {
+  const enabled = config.management.tokenCooldownAfterDeployEnabled !== false;
+  const hours = Number(config.management.tokenCooldownAfterDeployHours ?? 12);
+  if (!enabled || !Number.isFinite(hours) || hours <= 0) {
+    return { reserved: false, hours: 0 };
+  }
+  if (!reserveBaseMintDeploy(cooldownMint)) {
+    throw new Error("Token cooldown is active or another deploy for this token is in progress.");
+  }
+  return { reserved: true, hours };
+}
+
+function activateTokenCooldownAfterDeploy(poolAddress, baseMint, hours) {
+  if (!baseMint || !Number.isFinite(hours) || hours <= 0) return false;
+  try {
+    const until = recordBaseMintDeployCooldown(poolAddress, baseMint, hours);
+    if (!until) return false;
+    log("deploy", `Token cooldown set for ${baseMint.slice(0, 8)} until ${until} (${hours}h from successful deploy)`);
+    return true;
+  } catch (error) {
+    log("deploy_warn", `Could not persist token cooldown for ${baseMint.slice(0, 8)}: ${error.message}`);
+    return false;
+  }
+}
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -492,9 +523,11 @@ export async function deployPosition({
   const { StrategyType, getBinIdFromPrice, getPriceOfBinByBinId } = await getDLMM();
   const pool = await getPool(pool_address);
   const baseMint = pool.lbPair.tokenXMint.toString();
-  if (isBaseMintOnCooldown(baseMint)) {
-    log("deploy", `Base mint ${baseMint.slice(0, 8)} is on cooldown — skipping deploy for pool ${pool_address.slice(0, 8)}`);
-    return { success: false, error: "Token on cooldown — recently closed out-of-range too many times. Try a different token." };
+  const tokenYMint = pool.lbPair.tokenYMint.toString();
+  const cooldownMint = baseMint === config.tokens.SOL ? tokenYMint : baseMint;
+  if (isBaseMintOnCooldown(cooldownMint)) {
+    log("deploy", `Token mint ${cooldownMint.slice(0, 8)} is on cooldown — skipping deploy for pool ${pool_address.slice(0, 8)}`);
+    return { success: false, error: "Token cooldown is active. Wait for it to expire before deploying this mint again." };
   }
   const activeBin = await pool.getActiveBin();
   const actualBinStep = pool.lbPair.binStep;
@@ -629,6 +662,8 @@ export async function deployPosition({
   }
 
   if (shouldUseLpAgentRelayForDeploy()) {
+    let tokenCooldownReserved = false;
+    let tokenCooldownHours = 0;
     try {
       const wallet = getWallet();
       log(
@@ -664,6 +699,9 @@ export async function deployPosition({
 
       const addLiquidity = signSerializedTransactions(addLiquidityUnsigned, wallet);
       const swap = signSerializedTransactions(swapUnsigned, wallet);
+      const cooldownReservation = reserveTokenCooldownForDeploy(cooldownMint);
+      tokenCooldownReserved = cooldownReservation.reserved;
+      tokenCooldownHours = cooldownReservation.hours;
       const submit = await agentMeridianJson("/execution/zap-in/submit", {
         method: "POST",
         headers: getAgentMeridianHeaders({ json: true }),
@@ -680,6 +718,7 @@ export async function deployPosition({
           },
         }),
       });
+      activateTokenCooldownAfterDeploy(pool_address, cooldownMint, tokenCooldownHours);
 
       await new Promise((resolve) => setTimeout(resolve, 5000));
       _positionsCacheAt = 0;
@@ -764,6 +803,8 @@ export async function deployPosition({
     } catch (error) {
       log("deploy_error", `Relay deploy failed: ${error.message}`);
       return { success: false, error: error.message };
+    } finally {
+      if (tokenCooldownReserved) releaseBaseMintDeploy(cooldownMint);
     }
   }
 
@@ -775,8 +816,15 @@ export async function deployPosition({
   log("deploy", `Amount: ${finalAmountX} X, ${finalAmountY} Y`);
   log("deploy", `Position: ${newPosition.publicKey.toString()}`);
 
+  const txHashes = [];
+  let tokenCooldownReserved = false;
+  let tokenCooldownHours = 0;
+  let tokenCooldownRecorded = false;
+  let liquidityAdded = false;
   try {
-    const txHashes = [];
+    const cooldownReservation = reserveTokenCooldownForDeploy(cooldownMint);
+    tokenCooldownReserved = cooldownReservation.reserved;
+    tokenCooldownHours = cooldownReservation.hours;
 
     if (isWideRange) {
       // ── Wide Range Path (>69 bins) ─────────────────────────────────
@@ -813,7 +861,11 @@ export async function deployPosition({
       for (let i = 0; i < addTxArray.length; i++) {
         const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
         txHashes.push(txHash);
+        liquidityAdded = true;
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
+        if (!tokenCooldownRecorded) {
+          tokenCooldownRecorded = activateTokenCooldownAfterDeploy(pool_address, cooldownMint, tokenCooldownHours);
+        }
       }
     } else {
       // ── Standard Path (≤69 bins) ─────────────────────────────────
@@ -827,8 +879,13 @@ export async function deployPosition({
       });
       const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
       txHashes.push(txHash);
+      liquidityAdded = true;
+      tokenCooldownRecorded = activateTokenCooldownAfterDeploy(pool_address, cooldownMint, tokenCooldownHours);
     }
 
+    if (liquidityAdded && !tokenCooldownRecorded) {
+      tokenCooldownRecorded = activateTokenCooldownAfterDeploy(pool_address, cooldownMint, tokenCooldownHours);
+    }
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
     _positionsCacheAt = 0;
@@ -901,8 +958,13 @@ export async function deployPosition({
       txs: txHashes,
     };
   } catch (error) {
+    if (liquidityAdded && !tokenCooldownRecorded) {
+      tokenCooldownRecorded = activateTokenCooldownAfterDeploy(pool_address, cooldownMint, tokenCooldownHours);
+    }
     log("deploy_error", error.message);
     return { success: false, error: error.message };
+  } finally {
+    if (tokenCooldownReserved) releaseBaseMintDeploy(cooldownMint);
   }
 }
 

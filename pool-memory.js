@@ -11,8 +11,9 @@ import { config } from "./config.js";
 
 import { repoPath } from "./repo-root.js";
 
-const POOL_MEMORY_FILE = repoPath("pool-memory.json");
+const POOL_MEMORY_FILE = process.env.MERIDIAN_POOL_MEMORY_FILE || repoPath("pool-memory.json");
 const MAX_NOTE_LENGTH = 280;
+const pendingBaseMintDeploys = new Set();
 
 function sanitizeStoredNote(text, maxLen = MAX_NOTE_LENGTH) {
   if (text == null) return null;
@@ -51,16 +52,6 @@ function isAdjustedWinRateExcludedReason(reason) {
     text.includes("oor");
 }
 
-function isFeeGeneratingDeploy(deploy) {
-  const minFeeEarnedPct = Number(config.management.repeatDeployCooldownMinFeeEarnedPct ?? 0);
-  const feeEarnedPct = Number(deploy.fee_earned_pct ?? 0);
-  const feesUsd = Number(deploy.fees_earned_usd ?? 0);
-  const feesSol = Number(deploy.fees_earned_sol ?? 0);
-  const hasFees = (Number.isFinite(feesUsd) && feesUsd > 0) || (Number.isFinite(feesSol) && feesSol > 0);
-  if (!hasFees) return false;
-  return Number.isFinite(feeEarnedPct) && feeEarnedPct >= minFeeEarnedPct;
-}
-
 function setPoolCooldown(entry, hours, reason) {
   const cooldownUntil = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
   entry.cooldown_until = cooldownUntil;
@@ -77,6 +68,53 @@ function setBaseMintCooldown(db, baseMint, hours, reason) {
       entry.base_mint_cooldown_reason = reason;
     }
   }
+  return cooldownUntil;
+}
+
+function createPoolMemoryEntry(poolAddress, baseMint) {
+  return {
+    name: poolAddress.slice(0, 8),
+    base_mint: baseMint,
+    deploys: [],
+    total_deploys: 0,
+    avg_pnl_pct: 0,
+    win_rate: 0,
+    adjusted_win_rate: 0,
+    adjusted_win_rate_sample_count: 0,
+    last_deployed_at: null,
+    last_outcome: null,
+    notes: [],
+  };
+}
+
+/** Reserve a mint while its deploy transaction is in flight. */
+export function reserveBaseMintDeploy(baseMint) {
+  if (!baseMint || isBaseMintOnCooldown(baseMint)) return false;
+  if (pendingBaseMintDeploys.has(baseMint)) return false;
+  pendingBaseMintDeploys.add(baseMint);
+  return true;
+}
+
+export function releaseBaseMintDeploy(baseMint) {
+  if (!baseMint) return;
+  pendingBaseMintDeploys.delete(baseMint);
+}
+
+/** Persist the token cooldown immediately after a deploy is confirmed. */
+export function recordBaseMintDeployCooldown(poolAddress, baseMint, hours = 12) {
+  if (!poolAddress || !baseMint) return null;
+  const cooldownHours = Number(hours);
+  if (!Number.isFinite(cooldownHours) || cooldownHours <= 0) return null;
+
+  const db = load();
+  if (!db[poolAddress]) db[poolAddress] = createPoolMemoryEntry(poolAddress, baseMint);
+  db[poolAddress].base_mint = baseMint;
+
+  const reason = `successful deploy cooldown (${cooldownHours}h)`;
+  const cooldownUntil = setBaseMintCooldown(db, baseMint, cooldownHours, reason);
+  db[poolAddress].base_mint_cooldown_until = cooldownUntil;
+  db[poolAddress].base_mint_cooldown_reason = reason;
+  save(db);
   return cooldownUntil;
 }
 
@@ -193,32 +231,6 @@ export function recordPoolDeploy(poolAddress, deployData) {
     }
   }
 
-  if (config.management.repeatDeployCooldownEnabled) {
-    const triggerCount = Math.max(1, Number(config.management.repeatDeployCooldownTriggerCount ?? 3));
-    const cooldownHours = Math.max(0, Number(config.management.repeatDeployCooldownHours ?? 12));
-    const rawScope = String(config.management.repeatDeployCooldownScope || "token").toLowerCase();
-    const scope = ["pool", "token", "both"].includes(rawScope) ? rawScope : "token";
-    const recentRepeatDeploys = entry.deploys.slice(-triggerCount);
-    const repeatedFeeGeneratingDeploys =
-      cooldownHours > 0 &&
-      recentRepeatDeploys.length >= triggerCount &&
-      recentRepeatDeploys.every((d) => d.pnl_pct != null && isFeeGeneratingDeploy(d));
-
-    if (repeatedFeeGeneratingDeploys) {
-      const reason = `repeat fee-generating deploys (${triggerCount}x)`;
-      if (scope === "pool" || scope === "both" || !entry.base_mint) {
-        const poolCooldownUntil = setPoolCooldown(entry, cooldownHours, reason);
-        log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);
-      }
-      if ((scope === "token" || scope === "both") && entry.base_mint) {
-        const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, cooldownHours, reason);
-        if (mintCooldownUntil) {
-          log("pool-memory", `Base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil} (${reason})`);
-        }
-      }
-    }
-  }
-
   save(db);
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }
@@ -233,6 +245,7 @@ export function isPoolOnCooldown(poolAddress) {
 
 export function isBaseMintOnCooldown(baseMint) {
   if (!baseMint) return false;
+  if (pendingBaseMintDeploys.has(baseMint)) return true;
   const db = load();
   const now = new Date();
   return Object.values(db).some((entry) =>

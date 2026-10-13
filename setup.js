@@ -458,31 +458,14 @@ const outOfRangeWaitMinutes = await askNum(
   { min: 1 }
 );
 
-const repeatDeployCooldownEnabled = await askBool(
-  "Cooldown token/pool after repeated fee-generating deploys?",
-  p("repeatDeployCooldownEnabled", true)
+const tokenCooldownAfterDeployEnabled = await askBool(
+  "Cooldown each token after a successful deploy?",
+  p("tokenCooldownAfterDeployEnabled", p("repeatDeployCooldownEnabled", true))
 );
 
-const repeatDeployCooldownTriggerCount = await askNum(
-  "Repeat deploy cooldown trigger count",
-  p("repeatDeployCooldownTriggerCount", 3),
-  { min: 1 }
-);
-
-const repeatDeployCooldownHours = await askNum(
-  "Repeat deploy cooldown hours",
-  p("repeatDeployCooldownHours", 12),
-  { min: 0 }
-);
-
-const repeatDeployCooldownScope = await ask(
-  "Repeat deploy cooldown scope (pool/token/both)",
-  p("repeatDeployCooldownScope", "token")
-);
-
-const repeatDeployCooldownMinFeeEarnedPct = await askNum(
-  "Repeat deploy min fee earned %",
-  p("repeatDeployCooldownMinFeeEarnedPct", 0),
+const tokenCooldownAfterDeployHours = await askNum(
+  "Hours to cooldown a token after a successful deploy",
+  p("tokenCooldownAfterDeployHours", p("repeatDeployCooldownHours", 12)),
   { min: 0 }
 );
 
@@ -691,11 +674,8 @@ const userConfig = {
   takeProfitPct,
   stopLossPct,
   outOfRangeWaitMinutes,
-  repeatDeployCooldownEnabled,
-  repeatDeployCooldownTriggerCount,
-  repeatDeployCooldownHours,
-  repeatDeployCooldownScope,
-  repeatDeployCooldownMinFeeEarnedPct,
+  tokenCooldownAfterDeployEnabled,
+  tokenCooldownAfterDeployHours,
   // Trailing TP
   trailingTakeProfit,
   trailingTriggerPct,
@@ -761,7 +741,7 @@ console.log(`
   OOR close:    after ${outOfRangeWaitMinutes} min  ·  cooldown ${oorCooldownTriggerCount}x → ${oorCooldownHours}h
   Low yield:    fee/TVL < ${minFeePerTvl24h}% after ${minAgeBeforeYieldCheck} min
   Claim min:    $${minClaimAmount}
-  Repeat CD:    ${repeatDeployCooldownEnabled ? `${repeatDeployCooldownTriggerCount}x / ${repeatDeployCooldownHours}h / ${repeatDeployCooldownScope}` : "disabled"}
+  Token cooldown: ${tokenCooldownAfterDeployEnabled ? `${tokenCooldownAfterDeployHours}h after deploy` : "disabled"}
 
   Cycles:       management every ${managementIntervalMin}m  ·  screening every ${screeningIntervalMin}m
 

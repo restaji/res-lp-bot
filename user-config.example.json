@@ -50,6 +50,8 @@
   "outOfRangeWaitMinutes": 30,
   "oorCooldownTriggerCount": 3,
   "oorCooldownHours": 12,
+  "tokenCooldownAfterDeployEnabled": true,
+  "tokenCooldownAfterDeployHours": 12,
   "minVolumeToRebalance": 1000,
   "stopLossPct": -50,
   "takeProfitPct": 5,
