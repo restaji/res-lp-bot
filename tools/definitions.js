@@ -288,6 +288,10 @@ WARNING: This executes a real on-chain transaction. Cannot be undone.`,
             type: "boolean",
             description: "Set to true if user explicitly wants to hold/keep the base token after closing. Default: false (auto-swaps base token back to SOL)."
           },
+          skip_claim: {
+            type: "boolean",
+            description: "Set to true when the user asks to skip the separate pre-close fee-claim step. The atomic withdraw-and-close transaction may still claim pending fees as required by the DLMM SDK. Default: false."
+          },
           reason: {
             type: "string",
             description: "Why this position is being closed. Include the rule that triggered it, e.g. 'low yield', 'stop loss', 'trailing TP', 'OOR'. Used for pool memory."

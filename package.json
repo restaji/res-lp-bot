@@ -15,7 +15,7 @@
     "pm2:restart": "pm2 restart meridian --update-env",
     "pm2:logs": "pm2 logs meridian --lines 100",
     "dev": "DRY_RUN=true node index.js",
-    "test": "npm run test:syntax && node --test ./test/test-pool-memory.js ./test/test-telegram-format.js",
+    "test": "npm run test:syntax && node --test ./test/test-pool-memory.js ./test/test-telegram-format.js ./test/test-close-position-guards.js",
     "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",
     "test:screen": "node test/test-screening.js",
     "test:agent": "DRY_RUN=true node test/test-agent.js",

@@ -83,8 +83,8 @@ Claims accumulated swap fees for a position.
 Output: { success, position, txs, base_mint }
 \`\`\`
 
-### meridian close --position <addr> [--skip-swap] [--dry-run]
-Closes a position. Auto-swaps base token to SOL unless --skip-swap.
+### meridian close --position <addr> [--no-claim] [--skip-swap] [--dry-run]
+Closes a position. --no-claim skips the separate pre-close fee claim; the atomic DLMM close may still claim pending fees. Auto-swaps base token to SOL unless --skip-swap.
 \`\`\`
 Output: { success, pnl_pct, pnl_usd, txs, base_mint }
 \`\`\`
@@ -464,6 +464,7 @@ switch (subcommand) {
     const { executeTool } = await import("./tools/executor.js");
     out(await executeTool("close_position", {
       position_address: flags.position,
+      skip_claim: flags["no-claim"] ?? false,
       skip_swap: flags["skip-swap"] ?? false,
     }));
     break;

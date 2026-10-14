@@ -32,6 +32,13 @@ import {
   recordBaseMintDeployCooldown,
 } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
+import {
+  assertPositionAccountOwner,
+  assertPositionMatchesPoolAndOwner,
+  buildWithBlockhashRetry,
+  hasPositionLiquidity,
+  shouldSkipFeeClaim,
+} from "./close-position-helpers.js";
 import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
@@ -1557,7 +1564,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, reason }) {
+export async function closePosition({ position_address, reason, skip_claim = false }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -1570,10 +1577,27 @@ export async function closePosition({ position_address, reason }) {
     const wallet = getWallet();
     const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     const poolMeta = await getPoolMetadata(poolAddress);
+    poolCache.delete(poolAddress.toString());
+    let pool = await getPool(poolAddress);
+    const positionPubKey = new PublicKey(position_address);
+    const positionAccountInfo = await getConnection().getAccountInfo(positionPubKey, "confirmed");
+    assertPositionAccountOwner({
+      accountInfo: positionAccountInfo,
+      expectedProgramId: pool.program.programId,
+    });
+    const positionState = await pool.program.account.positionV2.fetch(positionPubKey);
+    assertPositionMatchesPoolAndOwner({
+      positionState,
+      expectedPoolAddress: poolAddress,
+      expectedOwner: wallet.publicKey,
+    });
+    const refreshPoolForClose = async () => {
+      poolCache.delete(poolAddress.toString());
+      pool = await getPool(poolAddress);
+    };
     if (shouldUseLpAgentRelay()) {
       let relaySubmitted = false;
       try {
-      const pool = await getPool(poolAddress);
       const relayAllowedDebitMints = [
         pool.lbPair.tokenXMint.toString(),
         pool.lbPair.tokenYMint.toString(),
@@ -1821,26 +1845,28 @@ export async function closePosition({ position_address, reason }) {
       }
     }
 
-    // Clear cached pool so SDK loads fresh position fee state
-    poolCache.delete(poolAddress.toString());
-    const pool = await getPool(poolAddress);
-
-    const positionPubKey = new PublicKey(position_address);
     const claimTxHashes = [];
     const closeTxHashes = [];
 
-    // ─── Step 1: Claim Fees (to clear account state) ───────────
+    // ─── Step 1: Optional standalone fee claim ──────────────────
     const recentlyClaimed = tracked?.last_claim_at && (Date.now() - new Date(tracked.last_claim_at).getTime()) < 60_000;
-    try {
-      if (recentlyClaimed) {
-        log("close", `Step 1: Skipping claim — fees already claimed ${Math.round((Date.now() - new Date(tracked.last_claim_at).getTime()) / 1000)}s ago`);
-      } else {
+    if (shouldSkipFeeClaim({ skipClaim: skip_claim, recentlyClaimed })) {
+      const reasonText = skip_claim ? "user requested no separate claim" : "fees were claimed recently";
+      log("close", `Step 1: Skipping separate fee claim — ${reasonText}`);
+    } else {
+      try {
         log("close", `Step 1: Claiming fees for ${position_address}`);
-        const positionData = await pool.getPosition(positionPubKey);
-        const claimTxs = await pool.claimSwapFee({
-          owner: wallet.publicKey,
-          position: positionData,
-        });
+        const claimTxs = await buildWithBlockhashRetry(
+          async () => {
+            const positionData = await pool.getPosition(positionPubKey);
+            return pool.claimSwapFee({
+              owner: wallet.publicKey,
+              position: positionData,
+            });
+          },
+          refreshPoolForClose,
+          (error) => log("close_warn", `Claim transaction build hit stale blockhash; rebuilding once: ${error.message}`),
+        );
         if (claimTxs && claimTxs.length > 0) {
           for (const tx of claimTxs) {
             const claimHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
@@ -1848,38 +1874,35 @@ export async function closePosition({ position_address, reason }) {
           }
           log("close", `Step 1 OK (claim only): ${claimTxHashes.join(", ")}`);
         }
+      } catch (e) {
+        log("close_warn", `Step 1 (Claim) failed or nothing to claim: ${e.message}`);
       }
-    } catch (e) {
-      log("close_warn", `Step 1 (Claim) failed or nothing to claim: ${e.message}`);
     }
 
     // ─── Step 2: Remove Liquidity & Close ──────────────────────
-    let hasLiquidity = false;
-    let closeFromBinId = -887272;
-    let closeToBinId = 887272;
-    try {
-      const positionDataForClose = await pool.getPosition(positionPubKey);
-      const processed = positionDataForClose?.positionData;
-      if (processed) {
-        closeFromBinId = processed.lowerBinId ?? closeFromBinId;
-        closeToBinId = processed.upperBinId ?? closeToBinId;
-        const bins = Array.isArray(processed.positionBinData) ? processed.positionBinData : [];
-        hasLiquidity = bins.some((bin) => new BN(bin.positionLiquidity || "0").gt(new BN(0)));
-      }
-    } catch (e) {
-      log("close_warn", `Could not check liquidity state: ${e.message}`);
+    const positionDataForClose = await pool.getPosition(positionPubKey);
+    const processed = positionDataForClose?.positionData;
+    if (!processed) {
+      throw new Error("Could not read position state; refusing to close an unverified account.");
     }
+    const closeFromBinId = processed.lowerBinId ?? -887272;
+    const closeToBinId = processed.upperBinId ?? 887272;
+    const hasLiquidity = hasPositionLiquidity(positionDataForClose);
 
     if (hasLiquidity) {
       log("close", `Step 2: Removing liquidity and closing account`);
-      const closeTx = await pool.removeLiquidity({
-        user: wallet.publicKey,
-        position: positionPubKey,
-        fromBinId: closeFromBinId,
-        toBinId: closeToBinId,
-        bps: new BN(10000),
-        shouldClaimAndClose: true,
-      });
+      const closeTx = await buildWithBlockhashRetry(
+        () => pool.removeLiquidity({
+          user: wallet.publicKey,
+          position: positionPubKey,
+          fromBinId: closeFromBinId,
+          toBinId: closeToBinId,
+          bps: new BN(10000),
+          shouldClaimAndClose: true,
+        }),
+        refreshPoolForClose,
+        (error) => log("close_warn", `Remove-liquidity build hit stale blockhash; rebuilding once: ${error.message}`),
+      );
 
       for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
         const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
@@ -1887,10 +1910,14 @@ export async function closePosition({ position_address, reason }) {
       }
     } else {
       log("close", `Step 2: No position liquidity detected, closing account`);
-      const closeTx = await pool.closePosition({
-        owner: wallet.publicKey,
-        position: { publicKey: positionPubKey },
-      });
+      const closeTx = await buildWithBlockhashRetry(
+        () => pool.closePosition({
+          owner: wallet.publicKey,
+          position: { publicKey: positionPubKey },
+        }),
+        refreshPoolForClose,
+        (error) => log("close_warn", `Close-account build hit stale blockhash; rebuilding once: ${error.message}`),
+      );
       const txHash = await sendAndConfirmTransaction(getConnection(), closeTx, [wallet]);
       closeTxHashes.push(txHash);
     }
